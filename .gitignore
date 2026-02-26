@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.log
+*.pt
+*.bin
+.DS_Store
+data/UNSW-NB15_*.csv
+data/unsw-nb15.zip
+data/data/
