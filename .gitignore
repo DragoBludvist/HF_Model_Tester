@@ -9,3 +9,8 @@ __pycache__/
 data/UNSW-NB15_*.csv
 data/unsw-nb15.zip
 data/data/
+data/botsv3/
+data/bots/
+*.tgz
+*.csv
+*.zipgit

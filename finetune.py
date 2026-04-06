@@ -14,8 +14,8 @@ MAX_LEN = 128
 
 # Load data
 print("Loading data...")
-train_df = pd.read_csv("/Users/aakashpremnath/HF_Model_Tester/data/data/train_processed.csv").sample(SAMPLE_SIZE, random_state=42)
-test_df = pd.read_csv("/Users/aakashpremnath/HF_Model_Tester/data/data/test_processed.csv").sample(1000, random_state=42)
+train_df = pd.read_csv("data/train_processed.csv").sample(SAMPLE_SIZE, random_state=42)
+test_df = pd.read_csv("data/test_processed.csv").sample(1000, random_state=42)
 
 print(f"Train: {len(train_df)} | Test: {len(test_df)}")
 print(f"Label distribution:\n{train_df['label'].value_counts()}")
