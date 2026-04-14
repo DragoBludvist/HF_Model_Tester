@@ -15,6 +15,7 @@ import numpy as np
 import json
 import os
 import time
+import argparse
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from torch.amp import autocast
@@ -26,6 +27,7 @@ MODEL_ID = "cisco-ai/SecureBERT2.0-base"
 ADAPTER_PATH = "models/secureBERT_botsv3_lora"
 TEST_PATH = "data/botsv3_test.csv"
 OUTPUT_PATH = "results/classified_alerts.json"
+DEFAULT_INPUT = TEST_PATH
 BATCH_SIZE = 32
 MAX_LEN = 256
 
@@ -137,6 +139,11 @@ def extract_rule_summary(alert_text, source_category, prediction, confidence):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="SecureBERT LoRA Inference")
+    parser.add_argument("--input", default=DEFAULT_INPUT, help="Path to input CSV")
+    parser.add_argument("--output", default=OUTPUT_PATH, help="Path to output JSON")
+    args = parser.parse_args()
+
     print("=" * 60)
     print("SecureBERT 2.0 LoRA — Inference Pipeline")
     print("=" * 60)
@@ -151,8 +158,9 @@ def main():
 
     # Load data
     print("\nLoading test data...")
-    df = pd.read_csv(TEST_PATH)
+    df = pd.read_csv(args.input)
     print(f"Loaded {len(df)} alerts")
+    has_labels = "label" in df.columns and not (df["label"] == "unknown").all()
 
     # Load model
     print(f"\nLoading model from {ADAPTER_PATH}...")
@@ -229,13 +237,20 @@ def main():
             "prediction": pred_label,
             "confidence": round(confidence, 4),
             "threat_probability": round(threat_prob, 4),
-            "actual_label": row.get("label", "unknown"),
+            "actual_label": row["label"] if has_labels else "unknown",
             "rule_summary": rule_summary,
         }
         alerts.append(alert_entry)
 
     # Sort by threat probability (highest first)
     alerts.sort(key=lambda x: x["threat_probability"], reverse=True)
+
+    accuracy = None
+    if has_labels:
+        true_labels = df["label"].astype(str).str.lower().values
+        pred_labels = np.where(np.array(all_preds) == 1, "threat", "benign")
+        correct = int((true_labels == pred_labels).sum())
+        accuracy = round(correct / len(df) * 100, 2)
 
     output = {
         "metadata": {
@@ -244,7 +259,7 @@ def main():
             "total_alerts": len(alerts),
             "threats_found": threat_count,
             "benign_filtered": benign_count,
-            "accuracy": round((df["label_int"].values == np.array(all_preds)).mean() * 100, 2),
+            "accuracy": accuracy,
             "inference_time_seconds": round(inference_time, 2),
             "avg_time_per_alert_ms": round(avg_time_ms, 2),
             "generated_at": datetime.now().isoformat(),
@@ -253,16 +268,19 @@ def main():
     }
 
     # Save
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*60}")
-    print(f"Results saved to {OUTPUT_PATH}")
+    print(f"Results saved to {args.output}")
     print(f"  Total alerts:    {len(alerts)}")
     print(f"  Threats found:   {threat_count}")
     print(f"  Benign filtered: {benign_count}")
-    print(f"  Accuracy:        {output['metadata']['accuracy']}%")
+    if accuracy is not None:
+        print(f"  Accuracy:        {accuracy}%")
+    else:
+        print(f"  Accuracy:        N/A (unlabeled data)")
     print(f"  Avg inference:   {avg_time_ms:.1f}ms per alert")
     print(f"{'='*60}")
 
