@@ -42,51 +42,46 @@ def adapt_botsv3(row):
 
 def adapt_wazuh(alert_json):
     """
-    Wazuh adapter — PLACEHOLDER for when real Wazuh data is available.
-    Extracts and formats relevant fields from a Wazuh JSON alert.
-
-    Expected Wazuh alert structure:
-    {
-        "rule": {"id": "5710", "level": 5, "description": "...", "groups": [...],
-                 "mitre": {"id": ["T1110"], "tactic": ["Credential Access"]}},
-        "agent": {"id": "003", "name": "web-server-01"},
-        "full_log": "Aug 20 10:44:06 ...",
-        "decoder": {"name": "sshd"},
-        "timestamp": "2018-08-20T10:44:06.000+0000"
-    }
+    Wazuh adapter — extracts and formats fields from a Wazuh JSON alert.
+    Source: /var/ossec/logs/alerts/alerts.json or Wazuh API.
+    Filters: level >= 3 recommended before calling this function.
     """
     rule = alert_json.get("rule", {})
     agent = alert_json.get("agent", {})
-    mitre = rule.get("mitre", {})
+    data = alert_json.get("data", {})
 
     parts = []
+
     # Category from rule groups
     groups = rule.get("groups", [])
     if groups:
         parts.append(f"[{','.join(groups)}]")
 
-    # Rule description (this is what the analyst actually reads)
+    # Rule description — primary analyst-facing text
     desc = rule.get("description", "")
     if desc:
         parts.append(desc)
 
-    # Agent context
-    agent_name = agent.get("name", "")
-    if agent_name:
-        parts.append(f"on agent {agent_name}")
-
-    # Severity
+    # Severity level
     level = rule.get("level", 0)
     if level:
         parts.append(f"level={level}")
 
-    # MITRE mapping if present
-    tactics = mitre.get("tactic", [])
-    techniques = mitre.get("id", [])
-    if tactics:
-        parts.append(f"MITRE: {','.join(tactics)}")
-    if techniques:
-        parts.append(f"({','.join(techniques)})")
+    # Agent context
+    agent_name = agent.get("name", "")
+    if agent_name:
+        parts.append(f"agent={agent_name}")
+
+    # Parsed data fields (srcip, protocol, url, etc.)
+    srcip = data.get("srcip", "")
+    if srcip:
+        parts.append(f"src={srcip}")
+    protocol = data.get("protocol", "")
+    if protocol:
+        parts.append(f"proto={protocol}")
+    url = data.get("url", "")
+    if url:
+        parts.append(f"url={url}")
 
     # Raw log as fallback context
     full_log = alert_json.get("full_log", "")
