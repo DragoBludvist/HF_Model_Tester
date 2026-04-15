@@ -44,9 +44,15 @@ def adapt_wazuh(alert_json):
     """
     Wazuh adapter — extracts and formats fields from a Wazuh JSON alert.
     Source: /var/ossec/logs/alerts/alerts.json or Wazuh API.
-    Filters: level >= 3 recommended before calling this function.
+    Filters: level >= 4 recommended before calling this function.
     """
     rule = alert_json.get("rule", {})
+
+    # Skip alerts below level 4
+    level = rule.get("level", 0)
+    if level < 4:
+        return None
+
     agent = alert_json.get("agent", {})
     data = alert_json.get("data", {})
 
@@ -62,8 +68,6 @@ def adapt_wazuh(alert_json):
     if desc:
         parts.append(desc)
 
-    # Severity level
-    level = rule.get("level", 0)
     if level:
         parts.append(f"level={level}")
 
