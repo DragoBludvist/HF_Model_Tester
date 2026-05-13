@@ -1,25 +1,37 @@
-SecureBERT 2.0 LoRA Fine-Tuned on BOTS v3 (optimized)
+SecureBERT 2.0 LoRA Fine-Tuned on BOTS v3 (v3 data + class weights)
 Model: cisco-ai/SecureBERT2.0-base
 Method: LoRA (r=16, alpha=32, dropout=0.1)
 Target modules: ['Wqkv', 'Wo']
+Class weights: benign=1.00, threat=2.28
 Trainable params: 2,299,394 / 151,905,796 (1.51%)
-Train samples: 32000
-Test samples: 8000
+Train samples: 20777
+Test samples (in-dist): 2309
+OOD test samples: 500
 Epochs completed: 4
-Best Threat F1: 0.9899
-Training time: 7821s
+Best Threat F1 (in-dist): 0.9702
+Training time: 4471s
 Adapter size: 9.2 MB
 
-Classification Report:
+In-Distribution Classification Report:
               precision    recall  f1-score   support
 
-      Benign       1.00      1.00      1.00      6062
-      Threat       0.99      0.99      0.99      1938
+      Benign       1.00      0.98      0.99      1605
+      Threat       0.95      1.00      0.97       704
 
-    accuracy                           1.00      8000
-   macro avg       0.99      0.99      0.99      8000
-weighted avg       1.00      1.00      1.00      8000
+    accuracy                           0.98      2309
+   macro avg       0.97      0.99      0.98      2309
+weighted avg       0.98      0.98      0.98      2309
 
 Confusion Matrix:
-[[6047   15]
- [  24 1914]]
+[[1565   40]
+ [   3  701]]
+
+OOD Classification Report:
+              precision    recall  f1-score   support
+
+      Benign       1.00      0.98      0.99       300
+      Threat       0.97      1.00      0.99       200
+
+    accuracy                           0.99       500
+   macro avg       0.99      0.99      0.99       500
+weighted avg       0.99      0.99      0.99       500
