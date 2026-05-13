@@ -1,5 +1,5 @@
 """
-finetune_botsv3_lora.py — Optimized LoRA fine-tune SecureBERT 2.0 on BOTS v3.
+finetune_botsv3.py — Optimized LoRA fine-tune SecureBERT 2.0 on BOTS v3 (v3 data + class weights).
 
 Optimizations:
   1. Pre-tokenization — tokenize once upfront, not per-batch
@@ -8,34 +8,52 @@ Optimizations:
   4. Targeted LoRA modules — Wqkv + Wo only (attention layers)
   5. torch.compile — JIT-compiled forward pass
 
+Changes vs. previous version:
+  - Class weights (n_benign / n_threat) are now actually applied to the loss
+    via F.cross_entropy(..., weight=class_weights). The previous version
+    computed the weight but never used it.
+  - Training data is now botsv3_train_v3.csv (standardize_v2 canonical format).
+  - 90/10 train/test split done internally; botsv3_test.csv is no longer used
+    because it's in v1 format and would mismatch the new training distribution.
+  - Per-epoch OOD evaluation against data/oodtest_v2.csv with per-category
+    breakdown. Lets us watch OOD recall converge live instead of finding out
+    at the end.
+
 Designed for: Dell G15, Ryzen 5600H, NVIDIA RTX 3050 (4GB VRAM, CUDA)
 
 Usage:
-    python finetune_botsv3_lora.py
+    python finetune_botsv3.py
 """
 
-import pandas as pd
-import torch
-import numpy as np
 import os
 import time
-from torch.utils.data import Dataset, DataLoader
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from torch.amp import GradScaler, autocast
+from torch.optim import AdamW
+from torch.utils.data import DataLoader, Dataset
 from transformers import (
-    AutoTokenizer,
     AutoModelForSequenceClassification,
+    AutoTokenizer,
     get_cosine_schedule_with_warmup,
 )
-from torch.optim import AdamW
-from torch.amp import autocast, GradScaler
-from sklearn.metrics import classification_report, confusion_matrix
-from peft import LoraConfig, get_peft_model, PeftModel, TaskType
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 MODEL_ID = "cisco-ai/SecureBERT2.0-base"
-TRAIN_PATH = "data/botsv3_train.csv"
-TEST_PATH = "data/botsv3_test.csv"
+TRAIN_PATH = "data/botsv3_train_v3.csv"     # canonical v2 format
+OOD_TEST_PATH = "data/oodtest_v2.csv"        # per-epoch generalization signal
 MODEL_SAVE_PATH = "models/secureBERT_botsv3_lora"
 RESULTS_DIR = "results"
+
+# Train/test split from TRAIN_PATH (no separate test file in v3 format yet)
+TEST_FRACTION = 0.10
+SPLIT_SEED = 42
 
 # Training hyperparameters
 BATCH_SIZE = 16
@@ -77,33 +95,35 @@ class AlertDataset(Dataset):
 
     def __getitem__(self, idx):
         return {
-            "input_ids": self.encodings["input_ids"][idx],
+            "input_ids":      self.encodings["input_ids"][idx],
             "attention_mask": self.encodings["attention_mask"][idx],
-            "labels": self.labels[idx],
+            "labels":         self.labels[idx],
         }
 
 
 # ── TRAINING ──────────────────────────────────────────────────────────────────
 
-def train_epoch(model, loader, optimizer, scheduler, scaler, device, epoch, total_epochs):
+def train_epoch(model, loader, optimizer, scheduler, scaler, device,
+                epoch, total_epochs, class_weights):
+    """One training epoch with explicitly weighted cross-entropy."""
     model.train()
-    total_loss = 0
+    total_loss = 0.0
     correct = 0
     total = 0
     device_type = device.type
 
     for step, batch in enumerate(loader):
-        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        input_ids      = batch["input_ids"].to(device, non_blocking=True)
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-        labels = batch["labels"].to(device, non_blocking=True)
+        labels         = batch["labels"].to(device, non_blocking=True)
 
         with autocast(device_type=device_type, enabled=(USE_AMP and device_type == "cuda")):
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-            )
-            loss = outputs.loss / GRAD_ACCUM_STEPS
+            # NOTE: we deliberately don't pass labels to the model here.
+            # The model's built-in loss is unweighted CE; we want weighted CE,
+            # so we compute it ourselves below.
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = F.cross_entropy(outputs.logits, labels, weight=class_weights)
+            loss = loss / GRAD_ACCUM_STEPS
 
         scaler.scale(loss).backward()
 
@@ -129,25 +149,23 @@ def train_epoch(model, loader, optimizer, scheduler, scaler, device, epoch, tota
 
 
 def evaluate(model, loader, device):
+    """Standard unweighted evaluation. Returns preds, labels, threat_probs, loss."""
     model.eval()
     all_preds = []
     all_labels = []
     all_probs = []
-    total_loss = 0
+    total_loss = 0.0
     device_type = device.type
 
     with torch.no_grad():
         for batch in loader:
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            input_ids      = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-            labels = batch["labels"].to(device, non_blocking=True)
+            labels         = batch["labels"].to(device, non_blocking=True)
 
             with autocast(device_type=device_type, enabled=(USE_AMP and device_type == "cuda")):
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                )
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask,
+                                labels=labels)
 
             total_loss += outputs.loss.item()
             probs = torch.softmax(outputs.logits, dim=1)
@@ -165,11 +183,35 @@ def evaluate(model, loader, device):
     )
 
 
+def print_per_category(preds, labels, categories, label_prefix=""):
+    """Print per-source-category metrics. categories is a parallel list
+    matching preds/labels by index."""
+    df = pd.DataFrame({"pred": preds, "label": labels, "cat": categories})
+    print(f"  {label_prefix}{'category':>10} {'n':>5} {'thr':>5} {'TP':>4} {'FP':>4} "
+          f"{'FN':>4} {'TN':>5} {'recall':>8} {'prec':>8} {'F1':>7}")
+    for cat in sorted(df["cat"].unique()):
+        sub = df[df["cat"] == cat]
+        n = len(sub)
+        n_thr = (sub["label"] == 1).sum()
+        tp = ((sub["pred"] == 1) & (sub["label"] == 1)).sum()
+        fp = ((sub["pred"] == 1) & (sub["label"] == 0)).sum()
+        fn = ((sub["pred"] == 0) & (sub["label"] == 1)).sum()
+        tn = ((sub["pred"] == 0) & (sub["label"] == 0)).sum()
+        rec = tp / (tp + fn) if (tp + fn) else float("nan")
+        prec = tp / (tp + fp) if (tp + fp) else float("nan")
+        f1 = 2*prec*rec/(prec+rec) if (prec and rec) else float("nan")
+        rs = f"{rec:>7.1%}" if (tp + fn) else "   N/A "
+        ps = f"{prec:>7.1%}" if (tp + fp) else "   N/A "
+        fs = f"{f1:>6.4f}" if (prec and rec) else "   N/A "
+        print(f"  {label_prefix}{cat:>10} {n:>5} {n_thr:>5} {tp:>4} {fp:>4} "
+              f"{fn:>4} {tn:>5} {rs} {ps} {fs}")
+
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
     print("=" * 60)
-    print("SecureBERT 2.0 LoRA Fine-Tuning on BOTS v3 (optimized)")
+    print("SecureBERT 2.0 LoRA Fine-Tuning on BOTS v3 (v3 data + class weights)")
     print("=" * 60)
 
     # Device
@@ -186,19 +228,39 @@ def main():
         print("WARNING: No GPU detected")
     print(f"Device: {device}")
 
-    # Load data
-    print("\nLoading data...")
-    train_df = pd.read_csv(TRAIN_PATH)
-    test_df = pd.read_csv(TEST_PATH)
-    print(f"Train: {len(train_df)} rows | Test: {len(test_df)} rows")
-    print(f"Train threats: {(train_df['label_int']==1).sum()} ({100*(train_df['label_int']==1).mean():.1f}%)")
-    print(f"Test threats:  {(test_df['label_int']==1).sum()} ({100*(test_df['label_int']==1).mean():.1f}%)")
+    # Load training data (canonical v2 format) + internal 90/10 split
+    print(f"\nLoading {TRAIN_PATH}...")
+    full_df = pd.read_csv(TRAIN_PATH)
+    train_df, test_df = train_test_split(
+        full_df,
+        test_size=TEST_FRACTION,
+        random_state=SPLIT_SEED,
+        stratify=full_df["label_int"],
+    )
+    train_df = train_df.reset_index(drop=True)
+    test_df  = test_df.reset_index(drop=True)
+    print(f"Train: {len(train_df)} rows | Test (in-dist held-out): {len(test_df)} rows")
+    print(f"Train threats: {(train_df['label_int']==1).sum()} "
+          f"({100*(train_df['label_int']==1).mean():.1f}%)")
+    print(f"Test threats:  {(test_df['label_int']==1).sum()} "
+          f"({100*(test_df['label_int']==1).mean():.1f}%)")
 
-    # Class weights
-    n_threat = (train_df["label_int"] == 1).sum()
-    n_benign = (train_df["label_int"] == 0).sum()
-    weight_threat = n_benign / n_threat
+    # OOD test set (optional — for live per-epoch generalization signal)
+    ood_df = None
+    if os.path.exists(OOD_TEST_PATH):
+        ood_df = pd.read_csv(OOD_TEST_PATH)
+        print(f"OOD: {len(ood_df)} rows loaded from {OOD_TEST_PATH}")
+        print(f"OOD threats: {(ood_df['label_int']==1).sum()} "
+              f"({100*(ood_df['label_int']==1).mean():.1f}%)")
+    else:
+        print(f"OOD test file not found at {OOD_TEST_PATH} — skipping OOD eval")
+
+    # Class weights — now actually used
+    n_threat = int((train_df["label_int"] == 1).sum())
+    n_benign = int((train_df["label_int"] == 0).sum())
+    weight_threat = n_benign / max(n_threat, 1)
     print(f"\nClass weights: benign=1.00, threat={weight_threat:.2f}")
+    class_weights = torch.tensor([1.0, weight_threat], dtype=torch.float, device=device)
 
     # Load tokenizer and pre-tokenize
     print(f"\nLoading tokenizer from {MODEL_ID}...")
@@ -206,7 +268,10 @@ def main():
 
     print("\nPre-tokenizing datasets:")
     train_dataset = AlertDataset(train_df["text"], train_df["label_int"], tokenizer)
-    test_dataset = AlertDataset(test_df["text"], test_df["label_int"], tokenizer)
+    test_dataset  = AlertDataset(test_df["text"],  test_df["label_int"],  tokenizer)
+    if ood_df is not None:
+        ood_dataset = AlertDataset(ood_df["text"], ood_df["label_int"], tokenizer)
+        ood_categories = ood_df["source_category"].tolist()
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
@@ -216,6 +281,11 @@ def main():
         test_dataset, batch_size=BATCH_SIZE,
         num_workers=0, pin_memory=(device.type == "cuda"),
     )
+    if ood_df is not None:
+        ood_loader = DataLoader(
+            ood_dataset, batch_size=BATCH_SIZE,
+            num_workers=0, pin_memory=(device.type == "cuda"),
+        )
 
     # Load base model
     print(f"\nLoading {MODEL_ID}...")
@@ -275,18 +345,19 @@ def main():
     print(f"Steps per epoch: {len(train_loader)}")
     print("-" * 60)
 
-    best_f1 = 0
+    best_f1 = 0.0
     patience_counter = 0
     start_time = time.time()
 
     for epoch in range(EPOCHS):
         epoch_start = time.time()
         train_loss, train_acc = train_epoch(
-            model, train_loader, optimizer, scheduler, scaler, device, epoch, EPOCHS
+            model, train_loader, optimizer, scheduler, scaler, device,
+            epoch, EPOCHS, class_weights,
         )
         epoch_time = time.time() - epoch_start
 
-        # Evaluate
+        # In-distribution eval
         preds, labels, probs, eval_loss = evaluate(model, test_loader, device)
         report = classification_report(labels, preds, target_names=["Benign", "Threat"],
                                        output_dict=True)
@@ -298,12 +369,23 @@ def main():
         print(f"  Eval Loss:  {eval_loss:.4f} | Eval Acc:  {100*accuracy:.1f}%")
         print(f"  Threat F1:  {threat_f1:.4f} | Benign F1: {report['Benign']['f1-score']:.4f}")
 
-        # Save best + early stopping check
+        # Per-epoch OOD eval (per-category breakdown)
+        if ood_df is not None:
+            print(f"\n  OOD eval ({OOD_TEST_PATH}):")
+            ood_preds, ood_labels, _, _ = evaluate(model, ood_loader, device)
+            ood_report = classification_report(ood_labels, ood_preds,
+                                                target_names=["Benign", "Threat"],
+                                                output_dict=True, zero_division=0)
+            print(f"    Overall: Acc={100*ood_report['accuracy']:.1f}% | "
+                  f"Threat F1={ood_report['Threat']['f1-score']:.4f} | "
+                  f"Threat Recall={ood_report['Threat']['recall']:.4f}")
+            print_per_category(ood_preds, ood_labels, ood_categories, label_prefix="  ")
+
+        # Save best (using in-dist F1) + early stopping check
         if threat_f1 > best_f1:
             best_f1 = threat_f1
             patience_counter = 0
             os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
-            # Unwrap compiled model if needed
             save_model = model._orig_mod if hasattr(model, "_orig_mod") else model
             save_model.save_pretrained(MODEL_SAVE_PATH)
             tokenizer.save_pretrained(MODEL_SAVE_PATH)
@@ -355,53 +437,50 @@ def main():
     print(f"  Actual Benign  {cm[0][0]:>6}  {cm[0][1]:>6}")
     print(f"  Actual Threat  {cm[1][0]:>6}  {cm[1][1]:>6}")
 
-    # Per-category evaluation
+    # Per-category evaluation on in-distribution test
     print(f"\n{'='*60}")
-    print("PER-CATEGORY EVALUATION")
+    print("IN-DISTRIBUTION PER-CATEGORY EVALUATION")
     print(f"{'='*60}")
+    test_categories = test_df["source_category"].tolist()
+    print_per_category(preds, labels, test_categories)
 
-    test_df_eval = test_df.copy()
-    test_df_eval["pred"] = preds
-    test_df_eval["prob_threat"] = probs
-
-    for cat in sorted(test_df_eval["source_category"].unique()):
-        cat_df = test_df_eval[test_df_eval["source_category"] == cat]
-        cat_preds = cat_df["pred"].values
-        cat_labels = cat_df["label_int"].values
-        if len(set(cat_labels)) > 1:
-            cat_report = classification_report(
-                cat_labels, cat_preds,
-                target_names=["Benign", "Threat"],
-                output_dict=True,
-            )
-            print(f"\n  {cat.upper()} ({len(cat_df)} samples)")
-            print(f"    Accuracy:  {100*cat_report['accuracy']:.1f}%")
-            print(f"    Threat F1: {cat_report['Threat']['f1-score']:.4f}")
-            print(f"    Benign F1: {cat_report['Benign']['f1-score']:.4f}")
-        else:
-            acc = (cat_preds == cat_labels).mean()
-            print(f"\n  {cat.upper()} ({len(cat_df)} samples) — single class only")
-            print(f"    Accuracy: {100*acc:.1f}%")
+    # Per-category evaluation on OOD test
+    if ood_df is not None:
+        print(f"\n{'='*60}")
+        print("OOD PER-CATEGORY EVALUATION (best adapter)")
+        print(f"{'='*60}")
+        ood_preds, ood_labels, _, _ = evaluate(model, ood_loader, device)
+        ood_report_text = classification_report(ood_labels, ood_preds,
+                                                 target_names=["Benign","Threat"],
+                                                 zero_division=0)
+        print(f"\n{ood_report_text}")
+        print_per_category(ood_preds, ood_labels, ood_categories)
 
     # Save results
     os.makedirs(RESULTS_DIR, exist_ok=True)
     results_path = os.path.join(RESULTS_DIR, "botsv3_lora_classification_report.txt")
     with open(results_path, "w") as f:
-        f.write("SecureBERT 2.0 LoRA Fine-Tuned on BOTS v3 (optimized)\n")
+        f.write("SecureBERT 2.0 LoRA Fine-Tuned on BOTS v3 (v3 data + class weights)\n")
         f.write(f"Model: {MODEL_ID}\n")
         f.write(f"Method: LoRA (r={LORA_R}, alpha={LORA_ALPHA}, dropout={LORA_DROPOUT})\n")
         f.write(f"Target modules: {LORA_TARGETS}\n")
+        f.write(f"Class weights: benign=1.00, threat={weight_threat:.2f}\n")
         f.write(f"Trainable params: {trainable_params:,} / {total_params:,} "
                 f"({100*trainable_params/total_params:.2f}%)\n")
         f.write(f"Train samples: {len(train_df)}\n")
-        f.write(f"Test samples: {len(test_df)}\n")
+        f.write(f"Test samples (in-dist): {len(test_df)}\n")
+        if ood_df is not None:
+            f.write(f"OOD test samples: {len(ood_df)}\n")
         f.write(f"Epochs completed: {min(epoch+1, EPOCHS)}\n")
-        f.write(f"Best Threat F1: {best_f1:.4f}\n")
+        f.write(f"Best Threat F1 (in-dist): {best_f1:.4f}\n")
         f.write(f"Training time: {total_time:.0f}s\n")
         f.write(f"Adapter size: {adapter_size/1e6:.1f} MB\n\n")
-        f.write("Classification Report:\n")
+        f.write("In-Distribution Classification Report:\n")
         f.write(report_text)
         f.write(f"\nConfusion Matrix:\n{cm}\n")
+        if ood_df is not None:
+            f.write(f"\nOOD Classification Report:\n")
+            f.write(ood_report_text)
 
     print(f"\nResults saved to {results_path}")
 
