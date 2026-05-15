@@ -6,14 +6,18 @@
      2. Base / reset
      3. Atmosphere overlays (scanlines, glow)
      4. Header
-     5. KPI strip
-     6. Main grid + panel chrome
-     7. Filters + search
-     8. Alert rows
-     9. Charts (volume, donut, sources)
-    10. Health footer
-    11. Responsive breakpoints
-    12. Micro-animations
+     5. Upload button + file input
+     6. Dataset bar (shown when JSON is loaded)
+     7. KPI strip
+     8. Main grid + panel chrome
+     9. Filters + search
+    10. Alert rows
+    11. Charts (volume, donut, sources)
+    12. Health footer
+    13. Drop overlay (drag-and-drop target)
+    14. Toast (transient notifications)
+    15. Responsive breakpoints
+    16. Micro-animations
    ============================================================ */
 
 
@@ -134,7 +138,7 @@ body::after {
 .header-meta {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 18px;
   font-size: 11px;
   letter-spacing: 1px;
 }
@@ -164,6 +168,7 @@ body::after {
   padding: 6px 12px;
   border: 1px solid var(--accent);
   background: rgba(0, 255, 194, 0.05);
+  transition: all 0.2s;
 }
 
 .status-dot {
@@ -182,8 +187,111 @@ body::after {
   color: var(--accent);
 }
 
+/* Dataset mode color shift */
+.status.dataset {
+  border-color: var(--warning);
+  background: rgba(255, 0, 184, 0.06);
+}
 
-/* ============ 5. KPI STRIP ============ */
+.status.dataset .status-dot {
+  background: var(--warning);
+  box-shadow: 0 0 8px var(--warning);
+  animation: none;
+}
+
+.status.dataset .status-text {
+  color: var(--warning);
+}
+
+
+/* ============ 5. UPLOAD BUTTON + FILE INPUT ============ */
+.upload-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.upload-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 255, 194, 0.05);
+}
+
+.upload-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+#file-input {
+  display: none;
+}
+
+.clear-btn {
+  display: none;
+  border-color: var(--threat);
+  color: var(--threat);
+}
+
+.clear-btn:hover {
+  background: rgba(255, 0, 85, 0.08);
+  border-color: var(--threat);
+  color: var(--threat);
+}
+
+.clear-btn.visible {
+  display: flex;
+}
+
+
+/* ============ 6. DATASET BAR ============ */
+.dataset-bar {
+  display: none;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 24px;
+  background: rgba(255, 0, 184, 0.04);
+  border-bottom: 1px solid rgba(255, 0, 184, 0.18);
+  font-size: 11px;
+}
+
+.dataset-bar.visible {
+  display: flex;
+}
+
+.dataset-label {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.dataset-name {
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+  color: var(--warning);
+  letter-spacing: 0.5px;
+}
+
+.dataset-stats {
+  color: var(--text-secondary);
+  font-size: 10px;
+  letter-spacing: 1px;
+  margin-left: auto;
+}
+
+
+/* ============ 7. KPI STRIP ============ */
 .kpis {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -257,7 +365,7 @@ body::after {
 }
 
 
-/* ============ 6. MAIN GRID + PANEL CHROME ============ */
+/* ============ 8. MAIN GRID + PANEL CHROME ============ */
 .main {
   flex: 1;
   display: grid;
@@ -331,7 +439,7 @@ body::after {
 }
 
 
-/* ============ 7. FILTERS + SEARCH ============ */
+/* ============ 9. FILTERS + SEARCH ============ */
 .feed-filters {
   display: flex;
   align-items: center;
@@ -394,7 +502,7 @@ body::after {
 }
 
 
-/* ============ 8. ALERT ROWS ============ */
+/* ============ 10. ALERT ROWS ============ */
 .feed-list {
   flex: 1;
   overflow-y: auto;
@@ -570,14 +678,25 @@ body::after {
   padding: 8px 10px;
   border-left: 2px solid var(--accent);
   white-space: pre-wrap;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .detail-field.full {
   grid-column: 1 / -1;
 }
 
+.empty-feed {
+  padding: 60px 22px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
 
-/* ============ 9. CHARTS (volume, donut, sources) ============ */
+
+/* ============ 11. CHARTS ============ */
 .charts {
   display: flex;
   flex-direction: column;
@@ -614,7 +733,6 @@ body::after {
   letter-spacing: 0.5px;
 }
 
-/* Volume area chart */
 .volume-chart {
   width: 100%;
   height: 80px;
@@ -642,7 +760,6 @@ body::after {
   letter-spacing: 1px;
 }
 
-/* Donut */
 .donut-wrap {
   display: flex;
   align-items: center;
@@ -667,6 +784,7 @@ body::after {
   stroke-width: 14;
   stroke-linecap: butt;
   filter: drop-shadow(0 0 4px var(--threat));
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .donut-center {
@@ -727,7 +845,6 @@ body::after {
   margin-left: 16px;
 }
 
-/* Source bars */
 .sources {
   display: flex;
   flex-direction: column;
@@ -746,6 +863,9 @@ body::after {
 .source-name {
   color: var(--text-secondary);
   text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-bar {
@@ -771,7 +891,7 @@ body::after {
 }
 
 
-/* ============ 10. HEALTH FOOTER ============ */
+/* ============ 12. HEALTH FOOTER ============ */
 .health-bar {
   display: grid;
   grid-template-columns: repeat(6, 1fr) auto;
@@ -833,7 +953,88 @@ body::after {
 }
 
 
-/* ============ 11. RESPONSIVE BREAKPOINTS ============ */
+/* ============ 13. DROP OVERLAY ============ */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+.drop-overlay.active {
+  display: flex;
+}
+
+.drop-overlay-inner {
+  text-align: center;
+  padding: 60px 80px;
+  border: 2px dashed var(--accent);
+  background: rgba(0, 255, 194, 0.03);
+}
+
+.drop-icon {
+  font-family: 'Space Mono', monospace;
+  font-size: 56px;
+  color: var(--accent);
+  text-shadow: 0 0 20px var(--accent);
+  margin-bottom: 12px;
+  animation: bob 1.4s ease-in-out infinite;
+}
+
+.drop-title {
+  font-family: 'Space Mono', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.drop-sub {
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+
+/* ============ 14. TOAST ============ */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--surface-1);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  padding: 12px 22px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  z-index: 999;
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  box-shadow: 0 0 24px rgba(0, 255, 194, 0.2);
+  max-width: 80vw;
+}
+
+.toast.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.toast.error {
+  border-color: var(--threat);
+  box-shadow: 0 0 24px rgba(255, 0, 85, 0.25);
+}
+
+
+/* ============ 15. RESPONSIVE BREAKPOINTS ============ */
 @media (max-width: 1100px) {
   .main {
     grid-template-columns: 1fr;
@@ -865,7 +1066,11 @@ body::after {
     align-items: flex-start;
   }
   .header-meta {
-    gap: 16px;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .upload-btn span:not(.upload-icon) {
+    display: none;
   }
   .kpis {
     grid-template-columns: repeat(2, 1fr);
@@ -906,10 +1111,17 @@ body::after {
   .health-bar {
     grid-template-columns: repeat(2, 1fr);
   }
+  .drop-overlay-inner {
+    padding: 40px 30px;
+  }
+  .drop-title {
+    font-size: 14px;
+    letter-spacing: 2px;
+  }
 }
 
 
-/* ============ 12. MICRO-ANIMATIONS ============ */
+/* ============ 16. MICRO-ANIMATIONS ============ */
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.85); }
@@ -924,6 +1136,11 @@ body::after {
   0% { text-shadow: 2px 0 var(--threat), -2px 0 var(--accent); }
   50% { text-shadow: -1px 0 var(--threat), 1px 0 var(--accent); }
   100% { text-shadow: none; }
+}
+
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
 }
 
 .alert.threat.fresh .alert-title {

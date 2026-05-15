@@ -1,12 +1,16 @@
 /* ============================================================
    NAVITAS SOC // DATA
    ------------------------------------------------------------
-   Mock alert templates and source counts.
-   This file gets replaced or augmented when real classified
-   alerts are loaded from JSON. Field names match the expected
-   shape of a real classification response.
+   Section index:
+     1. Mock alert templates (used when no file is loaded)
+     2. Source registry + mock counts
+     3. extractAlerts()  — find the alerts array in any JSON shape
+     4. normalizeAlert() — map arbitrary field names to our schema
+     5. Field-name dictionaries for flexible matching
    ============================================================ */
 
+
+/* ============ 1. MOCK ALERT TEMPLATES ============ */
 const ALERT_TEMPLATES = [
   { source: 'CrowdStrike', cls: 'threat', conf: 0.998, mitre: 'T1059.001',
     title: 'Encoded PowerShell command executed by user jsmith',
@@ -87,6 +91,8 @@ const ALERT_TEMPLATES = [
     raw: 'service=trellix_av update_type=signature version=2026.05.14' },
 ];
 
+
+/* ============ 2. SOURCE REGISTRY + MOCK COUNTS ============ */
 const SOURCES = ['CrowdStrike', 'Wazuh', 'Trellix EDR', 'Purview DLP', 'CloudTrail', 'Netskope'];
 
 const SOURCE_COUNTS = {
@@ -97,3 +103,138 @@ const SOURCE_COUNTS = {
   'Purview DLP': 245,
   'Netskope': 126
 };
+
+
+/* ============ 5. FIELD-NAME DICTIONARIES ============ */
+/* Defined before extractAlerts / normalizeAlert so they can use them. */
+const FIELD_ALIASES = {
+  classification: ['classification', 'predicted_label', 'pred_label', 'predicted',
+                   'prediction', 'pred', 'label', 'y_pred', 'class'],
+  confidence:     ['confidence', 'score', 'probability', 'prob', 'conf', 'pred_prob',
+                   'predicted_prob', 'p_threat', 'threat_prob'],
+  title:          ['title', 'alert', 'alert_text', 'text', 'message', 'msg',
+                   'description', 'event', 'event_text', 'full_log', 'rule_description'],
+  source:         ['source', 'tool', 'product', 'detector', 'source_tool', 'origin',
+                   'data_source', 'sensor'],
+  host:           ['host', 'hostname', 'computer', 'machine', 'asset', 'agent_name',
+                   'system', 'srcip', 'src_ip'],
+  user:           ['user', 'username', 'account', 'user_name', 'srcuser', 'src_user',
+                   'subject'],
+  severity:       ['severity', 'sev', 'level', 'rule_level', 'risk_score', 'priority'],
+  mitre:          ['mitre', 'mitre_id', 'attack_id', 'technique', 'technique_id',
+                   'mitre_attack', 'mitre_technique'],
+  raw:            ['raw', 'raw_alert', 'raw_log', 'payload', 'log', 'full_log'],
+  truth:          ['true_label', 'truth', 'gt', 'ground_truth', 'actual', 'y_true', 'y'],
+  timestamp:      ['timestamp', 'ts', 'time', 'event_time', '@timestamp', 'created_at',
+                   'date'],
+};
+
+
+/* ============ 3. extractAlerts() ============ */
+/* Given a parsed JSON object, return the alerts array no matter where it sits. */
+function extractAlerts(json) {
+  if (Array.isArray(json)) return json;
+  if (json == null || typeof json !== 'object') return [];
+
+  // Try common wrapper keys first
+  const wrappers = ['alerts', 'results', 'data', 'predictions', 'classifications',
+                    'records', 'items', 'rows', 'samples', 'entries'];
+  for (const key of wrappers) {
+    if (Array.isArray(json[key])) return json[key];
+  }
+
+  // Last resort: first array property found
+  for (const key in json) {
+    if (Array.isArray(json[key]) && json[key].length > 0
+        && typeof json[key][0] === 'object') {
+      return json[key];
+    }
+  }
+  return [];
+}
+
+
+/* ============ 4. normalizeAlert() ============ */
+/* Map an arbitrary alert object to our internal schema. */
+function pick(obj, aliases, fallback) {
+  for (const key of aliases) {
+    if (obj[key] !== undefined && obj[key] !== null) return obj[key];
+  }
+  return fallback;
+}
+
+function normalizeClassification(value) {
+  if (value == null) return 'benign';
+  if (typeof value === 'number') return value >= 0.5 ? 'threat' : 'benign';
+  if (typeof value === 'boolean') return value ? 'threat' : 'benign';
+  const s = String(value).toLowerCase().trim();
+  if (['1', 'true', 'yes', 'pos', 'positive'].includes(s)) return 'threat';
+  if (['0', 'false', 'no', 'neg', 'negative'].includes(s)) return 'benign';
+  if (s.includes('threat') || s.includes('malicious') || s.includes('attack')
+      || s.includes('alert') || s.includes('positive') || s.includes('anomal'))
+    return 'threat';
+  return 'benign';
+}
+
+function normalizeConfidence(value) {
+  if (value == null) return 0;
+  let n = parseFloat(value);
+  if (isNaN(n)) return 0;
+  if (n > 1) n = n / 100;          // looks like a percent
+  return Math.max(0, Math.min(1, n));
+}
+
+function normalizeTimestamp(value, index, total) {
+  if (value != null) {
+    const t = new Date(value).getTime();
+    if (!isNaN(t)) return t;
+  }
+  // Spread synthetic timestamps across the last 24 hours
+  const now = Date.now();
+  const span = 24 * 60 * 60 * 1000;
+  return now - span * (1 - (index / Math.max(1, total - 1)));
+}
+
+function normalizeAlert(raw, index, total) {
+  if (typeof raw !== 'object' || raw === null) raw = { text: String(raw) };
+
+  const cls = normalizeClassification(pick(raw, FIELD_ALIASES.classification));
+  const conf = normalizeConfidence(pick(raw, FIELD_ALIASES.confidence, 0.9));
+  const title = String(pick(raw, FIELD_ALIASES.title, '(no title)')).slice(0, 200);
+  const source = String(pick(raw, FIELD_ALIASES.source, 'Unknown'));
+  const host = String(pick(raw, FIELD_ALIASES.host, '-'));
+  const user = String(pick(raw, FIELD_ALIASES.user, '-'));
+  const sev = parseInt(pick(raw, FIELD_ALIASES.severity, 5)) || 5;
+  const mitre = pick(raw, FIELD_ALIASES.mitre, null);
+  const truth = pick(raw, FIELD_ALIASES.truth, null);
+  const tsRaw = pick(raw, FIELD_ALIASES.timestamp);
+  const timestamp = normalizeTimestamp(tsRaw, index, total);
+
+  // Raw signal: explicit field, else compact JSON dump of the original record
+  let rawSignal = pick(raw, FIELD_ALIASES.raw);
+  if (!rawSignal) {
+    try {
+      rawSignal = JSON.stringify(raw, null, 2);
+      if (rawSignal.length > 500) rawSignal = rawSignal.slice(0, 500) + '\n...';
+    } catch (e) {
+      rawSignal = String(raw);
+    }
+  }
+
+  return {
+    id: 'd-' + String(index + 1).padStart(6, '0'),
+    timestamp: timestamp,
+    source: source,
+    classification: cls,
+    confidence: conf,
+    mitre: mitre ? String(mitre) : null,
+    title: title,
+    host: host,
+    user: user,
+    severity: sev,
+    raw: String(rawSignal),
+    trueLabel: truth ? normalizeClassification(truth) : null,
+    fresh: false,
+    expanded: false,
+  };
+}

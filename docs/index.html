@@ -28,20 +28,35 @@
         <span class="meta-label">UTC</span>
         <span class="meta-value" id="clock">--:--:--</span>
       </div>
-      <div class="status">
+
+      <button class="upload-btn" id="upload-btn">
+        <span class="upload-icon">&#8593;</span>
+        <span>Upload JSON</span>
+      </button>
+      <input type="file" id="file-input" accept=".json,application/json">
+
+      <div class="status" id="status-indicator">
         <span class="status-dot"></span>
-        <span class="status-text">Live</span>
+        <span class="status-text" id="status-text">Live</span>
       </div>
+
+      <button class="btn-icon clear-btn" id="clear-data" title="Clear dataset, return to live mode">&#10005;</button>
     </div>
   </header>
 
+  <div class="dataset-bar" id="dataset-bar">
+    <span class="dataset-label">Dataset</span>
+    <span class="dataset-name" id="dataset-name">&mdash;</span>
+    <span class="dataset-stats" id="dataset-stats"></span>
+  </div>
+
   <section class="kpis">
     <div class="kpi">
-      <div class="kpi-label">Alerts / hr</div>
+      <div class="kpi-label">Total alerts</div>
       <div class="kpi-value" id="kpi-volume">24,431</div>
       <div class="kpi-meta">
         <span class="kpi-delta up">&#8599; +12%</span>
-        <span>vs 24h avg</span>
+        <span id="kpi-volume-meta">vs 24h avg</span>
       </div>
       <svg class="kpi-sparkline" viewBox="0 0 120 30" preserveAspectRatio="none">
         <polyline points="0,22 10,18 20,20 30,14 40,16 50,11 60,15 70,9 80,12 90,7 100,10 110,5 120,8"
@@ -49,18 +64,18 @@
       </svg>
     </div>
     <div class="kpi">
-      <div class="kpi-label">Threats today</div>
+      <div class="kpi-label">Threats</div>
       <div class="kpi-value threat" id="kpi-threats">142</div>
       <div class="kpi-meta">
-        <span class="kpi-delta down">&#8600; -8%</span>
-        <span>vs yesterday</span>
+        <span class="kpi-delta down" id="kpi-threats-delta">&#8600; -8%</span>
+        <span id="kpi-threats-meta">vs yesterday</span>
       </div>
     </div>
     <div class="kpi">
       <div class="kpi-label">Avg confidence</div>
-      <div class="kpi-value accent">99.2%</div>
+      <div class="kpi-value accent" id="kpi-confidence">99.2%</div>
       <div class="kpi-meta">
-        <span>across 8,247 classifications</span>
+        <span id="kpi-confidence-meta">across 8,247 classifications</span>
       </div>
     </div>
     <div class="kpi">
@@ -72,7 +87,7 @@
     </div>
     <div class="kpi">
       <div class="kpi-label">Analyst load saved</div>
-      <div class="kpi-value accent">87%</div>
+      <div class="kpi-value accent" id="kpi-saved">87%</div>
       <div class="kpi-meta">
         <span>auto-resolved benign</span>
       </div>
@@ -83,7 +98,7 @@
 
     <div class="panel feed">
       <div class="panel-header">
-        <div class="panel-title">Live Alert Feed</div>
+        <div class="panel-title" id="feed-title">Live Alert Feed</div>
         <div class="panel-actions">
           <button class="btn-icon active" id="play-toggle" title="Pause feed">&#9612;&#9612;</button>
           <button class="btn-icon" id="refresh" title="Refresh">&#8635;</button>
@@ -103,7 +118,7 @@
 
       <div class="chart-block">
         <div class="chart-title-row">
-          <div class="chart-title">Alert volume / 24h</div>
+          <div class="chart-title" id="chart-volume-title">Alert volume / 24h</div>
           <div class="chart-subtitle">Threat band <span style="color:var(--threat)">&#9646;</span></div>
         </div>
         <svg class="volume-chart" viewBox="0 0 320 80" preserveAspectRatio="none">
@@ -117,35 +132,35 @@
           <path id="volume-area" class="area" d=""/>
           <polyline id="volume-line" class="line" points=""/>
           <polyline id="threat-line" points="" fill="none" stroke="#ff0055" stroke-width="1.2" opacity="0.85"/>
-          <text class="axis-label" x="0" y="80">00:00</text>
-          <text class="axis-label" x="155" y="80" text-anchor="middle">12:00</text>
-          <text class="axis-label" x="320" y="80" text-anchor="end">now</text>
+          <text class="axis-label" id="volume-x0" x="0" y="80">00:00</text>
+          <text class="axis-label" id="volume-x1" x="155" y="80" text-anchor="middle">12:00</text>
+          <text class="axis-label" id="volume-x2" x="320" y="80" text-anchor="end">now</text>
         </svg>
       </div>
 
       <div class="chart-block">
         <div class="chart-title-row">
           <div class="chart-title">Classification ratio</div>
-          <div class="chart-subtitle">last 24h</div>
+          <div class="chart-subtitle" id="chart-donut-sub">last 24h</div>
         </div>
         <div class="donut-wrap">
           <svg class="donut" viewBox="0 0 110 110">
             <circle class="ring-bg" cx="55" cy="55" r="44"/>
-            <circle class="ring-threat" cx="55" cy="55" r="44"
+            <circle class="ring-threat" id="donut-ring" cx="55" cy="55" r="44"
               stroke-dasharray="276.46" stroke-dashoffset="237" transform="rotate(-90 55 55)"/>
             <g class="donut-center">
-              <text class="pct" x="55" y="52">14%</text>
+              <text class="pct" id="donut-pct" x="55" y="52">14%</text>
               <text class="lbl" x="55" y="68">Threats</text>
             </g>
           </svg>
           <div class="donut-legend">
             <div class="legend-row">
               <div class="legend-label"><span class="legend-dot threat"></span>Threat</div>
-              <div class="legend-value">1,154</div>
+              <div class="legend-value" id="legend-threat-count">1,154</div>
             </div>
             <div class="legend-row">
               <div class="legend-label"><span class="legend-dot benign"></span>Benign</div>
-              <div class="legend-value">7,093</div>
+              <div class="legend-value" id="legend-benign-count">7,093</div>
             </div>
           </div>
         </div>
@@ -154,7 +169,7 @@
       <div class="chart-block">
         <div class="chart-title-row">
           <div class="chart-title">By source tool</div>
-          <div class="chart-subtitle">today</div>
+          <div class="chart-subtitle" id="chart-sources-sub">today</div>
         </div>
         <div class="sources" id="sources"></div>
       </div>
@@ -194,6 +209,16 @@
   </section>
 
 </div>
+
+<div class="drop-overlay" id="drop-overlay">
+  <div class="drop-overlay-inner">
+    <div class="drop-icon">&#8595;</div>
+    <div class="drop-title">Drop JSON to load</div>
+    <div class="drop-sub">Classified alerts dataset</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script src="js/data.js"></script>
 <script src="js/dashboard.js"></script>
